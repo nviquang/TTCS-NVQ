@@ -1,0 +1,103 @@
+# =========================
+# Secrets / environment
+# =========================
+.env
+.env.*
+*.env
+*.local
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Data
+# =========================
+data/
+datasets/
+logs/
+outputs/
+checkpoints/
+wandb/
+mlruns/
+runs/
+
+# =========================
+# Python cache / compiled
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Python packaging
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# =========================
+# Testing / coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# =========================
+# Type check / lint caches
+# =========================
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.pytype/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# IDE / editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Model / training artifacts
+# =========================
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Local databases / misc
+# =========================
+*.sqlite3
+*.db
