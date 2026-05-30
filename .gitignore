@@ -113,3 +113,4 @@ SourceCode/quantization/model_quantized/
 SourceCode/quantization/results/
 
 .claude/
+CLAUDE.md
