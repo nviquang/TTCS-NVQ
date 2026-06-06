@@ -7,6 +7,7 @@ VieNeu-TTS (pip install vieneu) đọc caption bằng giọng nói.
 Điều khiển:
   Space  — chụp frame hiện tại, sinh caption + đọc to
   C      — chuyển sang webcam kế tiếp (vòng tròn)
+  V      — chuyển qua/lại giữa webcam và video sample_video.mp4
   Q      — thoát
 """
 
@@ -24,6 +25,7 @@ from transformers import BlipForConditionalGeneration, BlipProcessor
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(SCRIPT_DIR, "saved_models_v3")
 FONT_PATH = os.path.join("C:\\Windows\\Fonts", "arial.ttf")
+VIDEO_PATH = os.path.join(SCRIPT_DIR, "sample_video.mp4")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_CAM_INDEX = 10
@@ -34,7 +36,7 @@ CAPTION_MAX_LENGTH = 64
 CAPTION_NO_REPEAT_NGRAM = 3
 CAPTION_REPETITION_PENALTY = 1.5
 
-WINDOW_MAIN = "BLIP Vietnamese Captioning  [Space=chup | C=doi cam | Q=thoat]"
+WINDOW_MAIN = "BLIP Vietnamese Captioning  [Space=chup | C=doi cam | V=video/cam | Q=thoat]"
 
 STATUS_BAR_H = 40
 PANEL_PADDING = 16
@@ -207,9 +209,11 @@ def get_tts_engine():
         if _tts_engine is None:
             try:
                 from vieneu import Vieneu
+                import pygame
                 print("Đang tải VieNeu-TTS...")
                 _tts_engine = Vieneu(emotion="natural")
                 print("VieNeu-TTS đã sẵn sàng.")
+                pygame.mixer.init()
             except ImportError:
                 print(
                     "[WARN] Không tìm thấy vieneu. Cài đặt bằng: pip install vieneu\n"
@@ -233,14 +237,15 @@ def speak_caption(caption: str) -> None:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 tmp_path = f.name
             tts.save(audio, tmp_path)
-            pygame.mixer.init()
-            pygame.mixer.music.load(tmp_path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.05)
-            pygame.mixer.music.unload()
-            pygame.mixer.quit()
-            os.unlink(tmp_path)
+            try:
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.05)
+                pygame.mixer.music.unload()
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
         except Exception as exc:
             print(f"[TTS ERROR] {exc}")
 
@@ -266,20 +271,22 @@ def main() -> None:
 
     cam_idx_ptr = 0
     cap = cv2.VideoCapture(cam_indices[cam_idx_ptr], cv2.CAP_DSHOW)
+    use_video: bool = False
 
+    # Đọc frame đầu tiên để lấy kích thước thực tế
     ret0, frame0 = cap.read()
-    cam_h, cam_w = (frame0.shape[:2] if ret0 else (480, 640))
-    panel_w = cam_w
+    current_h, current_w = (frame0.shape[:2] if ret0 else (480, 640))
 
     current_caption: str = ""
     is_processing: bool = False
-    result_panel: np.ndarray = make_blank_panel(cam_h, panel_w)
+    result_panel: np.ndarray = make_blank_panel(current_h, current_w)
 
     print(
         f"\nSử dụng webcam #{cam_indices[cam_idx_ptr]}  "
         f"(tổng {len(cam_indices)} cam: {cam_indices})\n"
         "  Space = chụp & sinh caption\n"
         "  C     = đổi cam\n"
+        "  V     = chuyển qua/lại video sample_video.mp4\n"
         "  Q     = thoát\n"
     )
 
@@ -290,7 +297,7 @@ def main() -> None:
             caption = predict_caption(rgb, processor, model, DEVICE)
             current_caption = caption
             print(f"\n[Caption] {caption}")
-            result_panel = render_result_panel(snapshot, caption, panel_w, font_caption, font_status)
+            result_panel = render_result_panel(snapshot, caption, snapshot.shape[1], font_caption, font_status)
             speak_caption(caption)
         finally:
             is_processing = False
@@ -307,23 +314,50 @@ def main() -> None:
     while True:
         ret, frame = cap.read()
         if not ret:
+            if use_video:
+                # Video hết → loop lại từ đầu
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                continue
             print("[WARN] Không đọc được frame. Thử lại...")
             time.sleep(0.05)
             continue
 
+        if use_video:
+            # Resize frame video về đúng kích thước cam, giữ tỉ lệ (letterbox)
+            fh, fw = frame.shape[:2]
+            scale = min(current_w / fw, current_h / fh)
+            new_fw, new_fh = int(fw * scale), int(fh * scale)
+            resized = cv2.resize(frame, (new_fw, new_fh), interpolation=cv2.INTER_AREA)
+            frame = np.zeros((current_h, current_w, 3), dtype=np.uint8)
+            x_off = (current_w - new_fw) // 2
+            y_off = (current_h - new_fh) // 2
+            frame[y_off:y_off + new_fh, x_off:x_off + new_fw] = resized
+        else:
+            # Lấy kích thước thực tế của frame cam
+            h, w = frame.shape[:2]
+            # Nếu kích thước thay đổi (đổi cam), cập nhật và tạo lại result_panel
+            if h != current_h or w != current_w:
+                print(f"[INFO] Kích thước frame thay đổi: ({current_w}x{current_h}) → ({w}x{h})")
+                current_h, current_w = h, w
+                result_panel = make_blank_panel(current_h, current_w)
+
         cam_frame = frame.copy()
 
-        cam_label = f"Cam #{cam_indices[cam_idx_ptr]}  ({cam_idx_ptr + 1}/{len(cam_indices)})"
+        if use_video:
+            source_label = "Video: sample_video.mp4"
+        else:
+            source_label = f"Cam #{cam_indices[cam_idx_ptr]}  ({cam_idx_ptr + 1}/{len(cam_indices)})"
+
         if is_processing:
-            status_text = f"{cam_label}  |  Đang sinh caption..."
+            status_text = f"{source_label}  |  Đang sinh caption..."
             status_color = (0, 200, 255)
         else:
-            status_text = f"{cam_label}  |  Space=chụp  C=đổi cam  Q=thoát"
+            status_text = f"{source_label}  |  Space=chụp  C=đổi cam  V=video/cam  Q=thoát"
             status_color = (0, 220, 0)
 
         cam_frame = draw_status_bar(cam_frame, status_text, font_status, color=status_color)
 
-        panel_display = cv2.resize(result_panel, (panel_w, cam_h))
+        panel_display = cv2.resize(result_panel, (current_w, current_h))
         composite = np.hstack([cam_frame, panel_display])
 
         cv2.imshow(WINDOW_MAIN, composite)
@@ -335,15 +369,62 @@ def main() -> None:
         elif key == ord(" "):
             trigger_capture(frame)
         elif key == ord("c") or key == ord("C"):
-            cap.release()
-            cam_idx_ptr = (cam_idx_ptr + 1) % len(cam_indices)
-            new_idx = cam_indices[cam_idx_ptr]
-            print(f"[INFO] Chuyển sang webcam #{new_idx}")
-            cap = cv2.VideoCapture(new_idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                print(f"[WARN] Không mở được cam #{new_idx}, thử cam khác...")
-            current_caption = ""
-            result_panel = make_blank_panel(cam_h, panel_w)
+            if use_video:
+                print("[INFO] Đang ở chế độ video. Nhấn V để quay về cam trước khi đổi cam.")
+            else:
+                cap.release()
+                prev_cam_idx_ptr = cam_idx_ptr
+                opened = False
+                for attempt in range(1, len(cam_indices)):
+                    cam_idx_ptr = (prev_cam_idx_ptr + attempt) % len(cam_indices)
+                    new_idx = cam_indices[cam_idx_ptr]
+                    print(f"[INFO] Chuyển sang webcam #{new_idx}")
+                    cap = cv2.VideoCapture(new_idx, cv2.CAP_DSHOW)
+                    if cap.isOpened():
+                        opened = True
+                        break
+                    print(f"[WARN] Không mở được cam #{new_idx}, thử cam tiếp theo...")
+                    cap.release()
+                if not opened:
+                    cam_idx_ptr = prev_cam_idx_ptr
+                    old_idx = cam_indices[cam_idx_ptr]
+                    print(f"[ERROR] Tất cả cam đều thất bại. Quay lại webcam #{old_idx}.")
+                    cap = cv2.VideoCapture(old_idx, cv2.CAP_DSHOW)
+                current_caption = ""
+                result_panel = make_blank_panel(current_h, current_w)
+        elif key == ord("v") or key == ord("V"):
+            if not use_video:
+                try:
+                    if not os.path.isfile(VIDEO_PATH):
+                        raise FileNotFoundError(f"Không tìm thấy file video tại '{VIDEO_PATH}'")
+                    new_cap = cv2.VideoCapture(VIDEO_PATH)
+                    if not new_cap.isOpened():
+                        new_cap.release()
+                        raise IOError(f"OpenCV không mở được video '{VIDEO_PATH}'")
+                    cap.release()
+                    cap = new_cap
+                    use_video = True
+                    print(f"[INFO] Chuyển sang video: {VIDEO_PATH}")
+                    current_caption = ""
+                    result_panel = make_blank_panel(current_h, current_w)
+                except Exception as exc:
+                    print(f"[ERROR] Không thể mở video: {exc}")
+                    print(f"[INFO] Giữ nguyên webcam #{cam_indices[cam_idx_ptr]}.")
+            else:
+                try:
+                    new_cap = cv2.VideoCapture(cam_indices[cam_idx_ptr], cv2.CAP_DSHOW)
+                    if not new_cap.isOpened():
+                        new_cap.release()
+                        raise IOError(f"Không mở được webcam #{cam_indices[cam_idx_ptr]}")
+                    cap.release()
+                    cap = new_cap
+                    use_video = False
+                    print(f"[INFO] Quay lại webcam #{cam_indices[cam_idx_ptr]}")
+                    current_caption = ""
+                    result_panel = make_blank_panel(current_h, current_w)
+                except Exception as exc:
+                    print(f"[ERROR] Không thể quay lại webcam: {exc}")
+                    print("[INFO] Giữ nguyên chế độ video.")
 
     global _tts_engine
     if _tts_engine is not None:
@@ -353,6 +434,11 @@ def main() -> None:
             print(f"[WARN] TTS cleanup: {exc}")
         finally:
             _tts_engine = None
+        try:
+            import pygame
+            pygame.mixer.quit()
+        except Exception as exc:
+            print(f"[WARN] pygame.mixer.quit: {exc}")
 
     cap.release()
     cv2.destroyAllWindows()
